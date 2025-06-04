@@ -1,8 +1,10 @@
 import datetime
+import io
 
 import numpy as np
 import requests
 import streamlit as st
+from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 
 st.set_page_config(page_title="Digit Recognizer", layout="centered")
@@ -26,14 +28,19 @@ canvas_result = st_canvas(
 def preprocess(img_data):
     if img_data is None:
         return None
-    img = img_data[:, :, 3]  # Use alpha channel as mask
-    img = np.invert((img > 0).astype(np.uint8) * 255)  # White digit on black
+
+    # Convert to grayscale by taking the mean of RGB channels
+    img = np.mean(img_data[:, :, :3], axis=2)
+
+    # Normalize to [0, 1]
     img = img / 255.0
-    img = np.array(img)
-    img = np.clip(img, 0, 1)
-    img = np.array(img)
-    img = np.resize(img, (28, 28))
-    return img.tolist()
+
+    # Convert to PIL Image for proper resizing
+    img_pil = Image.fromarray((img * 255).astype(np.uint8))
+    img_resized = img_pil.resize((28, 28), Image.Resampling.LANCZOS)
+    img_array = np.array(img_resized) / 255.0
+
+    return img_array.tolist()
 
 
 # Sidebar for API URL
