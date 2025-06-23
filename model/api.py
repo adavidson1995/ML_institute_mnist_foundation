@@ -1,11 +1,15 @@
 import logging
 import os
+from datetime import datetime
+from typing import List
 
 import numpy as np
 import torch
 import torchvision.transforms as transforms
-from fastapi import FastAPI, HTTPException
+from database import Prediction, get_db
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from model import MNISTNet
 
@@ -18,6 +22,17 @@ app = FastAPI()
 
 class PredictRequest(BaseModel):
     image: list  # Expecting a 28x28 nested list (grayscale)
+    true_label: int | None = None  # Optional true label
+
+
+class PredictionOut(BaseModel):
+    id: int
+    timestamp: datetime
+    predicted_digit: int
+    true_label: int | None
+
+    class Config:
+        from_attributes = True  # for Pydantic v2, replaces orm_mode
 
 
 # Load model at startup
@@ -44,7 +59,7 @@ transform = transforms.Compose(
 
 
 @app.post("/predict")
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, db: Session = Depends(get_db)):
     try:
         # Convert input to numpy array and check shape
         arr = np.array(req.image, dtype=np.float32)
@@ -65,9 +80,27 @@ def predict(req: PredictRequest):
             output = model(tensor)
             probs = torch.softmax(output, dim=1)
             conf, pred = torch.max(probs, 1)
+            predicted_digit = int(pred.item())
+            confidence = float(conf.item())
+
             logger.info(f"Raw output: {output[0].tolist()}")
             logger.info(f"Probabilities: {probs[0].tolist()}")
-            return {"prediction": int(pred.item()), "confidence": float(conf.item())}
+
+            # Only log prediction to database if true_label is provided
+            if req.true_label is not None:
+                prediction = Prediction(
+                    predicted_digit=predicted_digit, true_label=req.true_label
+                )
+                db.add(prediction)
+                db.commit()
+
+            return {"prediction": predicted_digit, "confidence": confidence}
     except Exception as e:
         logger.error(f"Error during prediction: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history", response_model=List[PredictionOut])
+def get_history(db: Session = Depends(get_db)):
+    # Return the latest 50 predictions
+    return db.query(Prediction).order_by(Prediction.timestamp.desc()).limit(50).all()
